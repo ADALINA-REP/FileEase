@@ -10,5 +10,7 @@
 	<true/>
 	<key>uploadSymbols</key>
 	<true/>
+	<key>teamID</key>
+	<string>JTVCP8PGV8</string>
 </dict>
 </plist>
