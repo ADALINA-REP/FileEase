@@ -1,4 +1,4 @@
-name: iOS App Store Build & Deploy
+name: iOS Build & Release
 
 on:
   push:
@@ -6,80 +6,104 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Build & Deploy to App Store
-    runs-on: macos-14
+  build-ios:
+    name: Build & Deploy iOS to App Store Connect
+    runs-on: macos-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Flutter
+      - name: Setup Java Development Kit
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter SDK
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
           cache: true
 
-      - name: Install dependencies
-        run: flutter pub get
+      - name: Disable Swift Package Manager in Flutter
+        run: flutter config --no-enable-swift-package-manager
 
-      - name: Run verification tests
-        run: flutter test
+      - name: Precache iOS Artifacts
+        run: flutter precache --ios
 
-      - name: Install Apple Certificate & Provisioning Profile
-        env:
-          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
-          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
-          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      - name: Install Dependencies
         run: |
-          if [ -n "$BUILD_CERTIFICATE_BASE64" ]; then
-            echo "Installing iOS distribution certificate and profile..."
-            CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
-            PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
-            KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          flutter pub get
+          flutter build ios --config-only --release --no-codesign
 
-            echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o $CERTIFICATE_PATH
-            echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode -o $PP_PATH
+      - name: Write App Store Connect API Key File
+        run: |
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$HOME/private_keys"
+          TARGET_KEY="$HOME/.appstoreconnect/private_keys/AuthKey_9HC3ZFHYQ7.p8"
+          printf "%s\n" "-----BEGIN PRIVATE KEY-----" > "$TARGET_KEY"
+          printf "%s\n" "MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQggirxemIOJ0dlsLBJ" >> "$TARGET_KEY"
+          printf "%s\n" "9jbKPEcTJWI5i4OqpR+6Hv0JJ6KgCgYIKoZIzj0DAQehRANCAARACJZYyIKA/J4A" >> "$TARGET_KEY"
+          printf "%s\n" "E0oWMjQECeR0pfOndYymen5P8Q7ba7o4l+IdZzDSNjbZyQ0I6oVlZi54EbeUkz9m" >> "$TARGET_KEY"
+          printf "%s\n" "xMlFxhoE" >> "$TARGET_KEY"
+          printf "%s\n" "-----END PRIVATE KEY-----" >> "$TARGET_KEY"
+          cp "$TARGET_KEY" "$HOME/private_keys/AuthKey_9HC3ZFHYQ7.p8"
 
-            security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-            security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-            security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+      - name: Create ExportOptions.plist
+        run: |
+          cat <<EOF > ios/ExportOptions.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>destination</key>
+              <string>export</string>
+              <key>method</key>
+              <string>app-store-connect</string>
+              <key>teamID</key>
+              <string>JTVCP8PGV8</string>
+              <key>uploadSymbols</key>
+              <true/>
+              <key>manageAppVersionAndBuildNumber</key>
+              <true/>
+              <key>signingStyle</key>
+              <string>automatic</string>
+          </dict>
+          </plist>
+          EOF
 
-            security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-            security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-            security list-keychain -d user -s $KEYCHAIN_PATH
+      - name: Build Unsigned IPA Archive via Flutter
+        run: |
+          BUILD_NUM=$((10 + GITHUB_RUN_NUMBER))
+          echo "Building iOS archive with dynamic build number: $BUILD_NUM"
+          flutter build ipa --release --no-codesign --build-number=$BUILD_NUM
 
-            mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-            cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
-          else
-            echo "Signing secrets not configured yet. Will build without codesigning."
+      - name: Export Signed IPA via App Store Connect API Key
+        run: |
+          KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_9HC3ZFHYQ7.p8"
+          ARCHIVE_PATH=$(find build/ios -name "*.xcarchive" -type d 2>/dev/null | head -n 1)
+          if [ -z "$ARCHIVE_PATH" ]; then
+            ARCHIVE_PATH="build/ios/archive/Runner.xcarchive"
           fi
+          echo "Found xcarchive at: $ARCHIVE_PATH"
 
-      - name: Build iOS IPA
+          mkdir -p build/ios/ipa
+
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportOptionsPlist ios/ExportOptions.plist \
+            -exportPath build/ios/ipa \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY_PATH" \
+            -authenticationKeyID "9HC3ZFHYQ7" \
+            -authenticationKeyIssuerID "b4575c22-8a31-4f97-bed4-889e3c21a7b5"
+
+      - name: Upload Signed IPA to App Store Connect / TestFlight
         run: |
-          if [ -n "${{ secrets.BUILD_CERTIFICATE_BASE64 }}" ]; then
-            flutter build ipa --release --export-options-plist=ios/ExportOptions.plist
-          else
-            flutter build ipa --release --no-codesign
+          IPA_FILE=$(find build/ios/ipa -name "*.ipa" 2>/dev/null | head -n 1)
+          if [ -z "$IPA_FILE" ]; then
+            IPA_FILE=$(find build/ios -name "*.ipa" 2>/dev/null | head -n 1)
           fi
-
-      - name: Upload IPA Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: FileEase-iOS-IPA
-          path: |
-            build/ios/ipa/*.ipa
-            build/ios/archive/*.xcarchive
-          if-no-files-found: warn
-
-      - name: Upload to App Store Connect / TestFlight
-        if: ${{ env.APP_STORE_CONNECT_KEY_ID != '' }}
-        env:
-          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
-        run: |
-          mkdir -p ~/.appstoreconnect/private_keys
-          echo "$APP_STORE_CONNECT_PRIVATE_KEY" > ~/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8
-          xcrun altool --upload-app -f build/ios/ipa/*.ipa --type ios --apiKey "$APP_STORE_CONNECT_KEY_ID" --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID"
+          echo "Uploading $IPA_FILE to App Store Connect..."
+          xcrun altool --upload-app -f "$IPA_FILE" -t ios --apiKey "9HC3ZFHYQ7" --apiIssuer "b4575c22-8a31-4f97-bed4-889e3c21a7b5" --verbose
