@@ -30,7 +30,9 @@ class AdsService {
           ? 'ca-app-pub-3940256099942544/6300978111' // Android Banner Test
           : 'ca-app-pub-9046523366518719/4252910008'; // Android Banner Production
     } else if (Platform.isIOS) {
-      return 'ca-app-pub-3940256099942544/2934735716';
+      return kDebugMode
+          ? 'ca-app-pub-3940256099942544/2934735716' // iOS Banner Test
+          : 'ca-app-pub-9046523366518719/6246316827'; // iOS Banner Production
     }
     return '';
   }
@@ -42,7 +44,9 @@ class AdsService {
           ? 'ca-app-pub-3940256099942544/1033173712' // Android Interstitial Test
           : 'ca-app-pub-9046523366518719/2888304559'; // Android Interstitial Production
     } else if (Platform.isIOS) {
-      return 'ca-app-pub-3940256099942544/4411468910';
+      return kDebugMode
+          ? 'ca-app-pub-3940256099942544/4411468910' // iOS Interstitial Test
+          : 'ca-app-pub-9046523366518719/6775753687'; // iOS Interstitial Production
     }
     return '';
   }
@@ -54,7 +58,9 @@ class AdsService {
           ? 'ca-app-pub-3940256099942544/5224354917' // Android Rewarded Test
           : 'ca-app-pub-9046523366518719/6687501651'; // Android Rewarded Production
     } else if (Platform.isIOS) {
-      return 'ca-app-pub-3940256099942544/1712485313';
+      return kDebugMode
+          ? 'ca-app-pub-3940256099942544/1712485313' // iOS Rewarded Test
+          : 'ca-app-pub-9046523366518719/5131499529'; // iOS Rewarded Production
     }
     return '';
   }
